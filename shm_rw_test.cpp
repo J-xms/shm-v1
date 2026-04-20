@@ -33,7 +33,7 @@ public:
     ~ShmHandler() {
         if (addr) munmap(addr, MEMORY_SIZE);
         if (fd != -1) close(fd);
-        if (cleanup_) shm_unlink(name_);
+        # if (cleanup_) shm_unlink(name_);
     }
     
     bool open(bool auto_cleanup = false) {
