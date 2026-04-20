@@ -28,7 +28,7 @@ public:
     }
     
     bool open() {
-        fd = ::shm_open(name_, O_RDWR | O_CREAT, 0666);
+        fd = ::shm_open(name_, O_RDWR, 0666);
         if (fd == -1) {
             std::cerr << "shm_open failed: " << strerror(errno) << std::endl;
             return false;
