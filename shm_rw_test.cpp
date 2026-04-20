@@ -11,23 +11,33 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <errno.h>
-#include <sstream>
+#include <signal.h>
 
-constexpr size_t MEMORY_SIZE = 1024 * 1024;  // 1MB
+constexpr size_t MEMORY_SIZE = 1024 * 1024;
 constexpr int DURATION_SECONDS = 120;
 constexpr int OPS_PER_SECOND = 10;
 constexpr size_t STRING_SIZE = 256;
 
+volatile sig_atomic_t running = 1;
+
+void signalHandler(int signum) {
+    if (signum == SIGINT) {
+        running = 0;
+    }
+}
+
 class ShmHandler {
 public:
-    ShmHandler(const char* name) : fd(-1), addr(nullptr), name_(name) {}
+    ShmHandler(const char* name) : fd(-1), addr(nullptr), name_(name), cleanup_(false) {}
     
     ~ShmHandler() {
         if (addr) munmap(addr, MEMORY_SIZE);
         if (fd != -1) close(fd);
+        if (cleanup_) shm_unlink(name_);
     }
     
-    bool open() {
+    bool open(bool auto_cleanup = false) {
+        cleanup_ = auto_cleanup;
         fd = ::shm_open(name_, O_RDWR, 0666);
         if (fd == -1) {
             std::cerr << "shm_open failed: " << strerror(errno) << std::endl;
@@ -54,11 +64,13 @@ public:
     }
     
     void* getAddr() const { return addr; }
+    bool isRunning() const { return running; }
     
 private:
     int fd;
     void* addr;
     const char* name_;
+    bool cleanup_;
 };
 
 uint64_t getPhysicalAddress(void* vaddr) {
@@ -107,12 +119,14 @@ int main(int argc, char* argv[]) {
         return 1;
     }
     
+    signal(SIGINT, signalHandler);
+    
     const char* shm_name = argv[1];
     
     srand(time(nullptr));
     
     ShmHandler shm(shm_name);
-    if (!shm.open()) {
+    if (!shm.open(true)) {
         return 1;
     }
     
@@ -125,12 +139,13 @@ int main(int argc, char* argv[]) {
     std::cout << "  Size: " << MEMORY_SIZE << " bytes" << std::endl;
     std::cout << "\nStarting 120s read/write test..." << std::endl;
     std::cout << "Operations: " << OPS_PER_SECOND << " per second" << std::endl;
+    std::cout << "Press Ctrl-C to stop and cleanup." << std::endl;
     std::cout << "-------------------------------------------" << std::endl;
     
     auto start_time = std::chrono::steady_clock::now();
     int total_ops = 0;
     
-    while (true) {
+    while (shm.isRunning()) {
         auto current_time = std::chrono::steady_clock::now();
         auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(current_time - start_time).count();
         
@@ -139,6 +154,8 @@ int main(int argc, char* argv[]) {
         }
         
         for (int i = 0; i < OPS_PER_SECOND; ++i) {
+            if (!shm.isRunning()) break;
+            
             size_t offset = (rand() % ((MEMORY_SIZE - STRING_SIZE) / STRING_SIZE)) * STRING_SIZE;
             char* target_addr = static_cast<char*>(mapped_addr) + offset;
             
@@ -166,7 +183,11 @@ int main(int argc, char* argv[]) {
     }
     
     std::cout << "-------------------------------------------" << std::endl;
-    std::cout << "Test completed. Total operations: " << total_ops << std::endl;
+    if (!running) {
+        std::cout << "Interrupted by user. Cleaning up..." << std::endl;
+    } else {
+        std::cout << "Test completed. Total operations: " << total_ops << std::endl;
+    }
     
     return 0;
 }
